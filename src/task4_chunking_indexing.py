@@ -1,11 +1,11 @@
 """
-Task 4 - Chunking & Indexing with LangChain, OpenAI embeddings, and Weaviate.
+Task 4 - Chunking & Indexing with LangChain, Gemini embeddings, and Weaviate.
 
 Run:
     python src/task4_chunking_indexing.py
 
 Required .env values:
-    OPENAI_API_KEY=...
+    GEMINI_API_KEY=...
 
 Optional .env values:
     WEAVIATE_URL=https://xxx.weaviate.network
@@ -43,10 +43,11 @@ CHUNK_SIZE = 500
 CHUNK_OVERLAP = 50
 CHUNKING_METHOD = "RecursiveCharacterTextSplitter"
 
-# OpenAI text-embedding-3-small returns 1536-dimensional vectors by default and
-# is a good balance of cost, speed, and retrieval quality.
-EMBEDDING_MODEL = "text-embedding-3-small"
-EMBEDDING_DIM = 1536
+# Gemini embedding model for RAG retrieval. The model supports configurable
+# output dimensionality; 1536 is a balanced size for retrieval quality while
+# keeping Weaviate vectors smaller than the full 3072-dimensional output.
+EMBEDDING_MODEL = os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
+EMBEDDING_DIM = int(os.getenv("GEMINI_EMBEDDING_DIM", "1536"))
 
 # Weaviate is used as the primary vector store because it supports vector search
 # and can later support hybrid retrieval with BM25.
@@ -134,29 +135,37 @@ def chunk_documents(documents: list[dict]) -> list[dict]:
 
 def embed_chunks(chunks: list[dict], batch_size: int = 64) -> list[dict]:
     """
-    Embed chunks with OpenAI text-embedding-3-small.
+    Embed chunks with Gemini embedding API.
 
     Returns:
         Each chunk dict with an extra 'embedding': list[float]
     """
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key:
-        raise RuntimeError("OPENAI_API_KEY is missing. Add it to .env before embedding.")
+        raise RuntimeError("GEMINI_API_KEY is missing. Add it to .env before embedding.")
 
     try:
-        from openai import OpenAI
+        from google import genai
+        from google.genai import types
     except ImportError as exc:
-        raise ImportError("Task 4 requires openai. Run: pip install openai") from exc
+        raise ImportError("Task 4 requires google-genai. Run: pip install google-genai") from exc
 
-    client = OpenAI(api_key=api_key)
+    client = genai.Client(api_key=api_key)
 
     for start in range(0, len(chunks), batch_size):
         batch = chunks[start : start + batch_size]
         texts = [chunk["content"].replace("\n", " ") for chunk in batch]
-        response = client.embeddings.create(model=EMBEDDING_MODEL, input=texts)
+        response = client.models.embed_content(
+            model=EMBEDDING_MODEL,
+            contents=texts,
+            config=types.EmbedContentConfig(
+                task_type="RETRIEVAL_DOCUMENT",
+                output_dimensionality=EMBEDDING_DIM,
+            ),
+        )
 
-        for chunk, embedding_item in zip(batch, response.data):
-            chunk["embedding"] = embedding_item.embedding
+        for chunk, embedding_item in zip(batch, response.embeddings):
+            chunk["embedding"] = embedding_item.values
             chunk["metadata"]["embedding_model"] = EMBEDDING_MODEL
             chunk["metadata"]["embedding_dim"] = EMBEDDING_DIM
 
@@ -262,11 +271,11 @@ def index_to_vectorstore(chunks: list[dict]) -> str:
 
 
 def run_pipeline() -> str:
-    """Run the full pipeline: load -> chunk -> OpenAI embed -> Weaviate index."""
+    """Run the full pipeline: load -> chunk -> Gemini embed -> Weaviate index."""
     print("=" * 50)
     print("Task 4: Chunking & Indexing")
     print(f"  Chunking: {CHUNKING_METHOD} (size={CHUNK_SIZE}, overlap={CHUNK_OVERLAP})")
-    print(f"  Embedding: OpenAI {EMBEDDING_MODEL} (dim={EMBEDDING_DIM})")
+    print(f"  Embedding: Gemini {EMBEDDING_MODEL} (dim={EMBEDDING_DIM})")
     print(f"  Vector Store: {VECTOR_STORE} collection={WEAVIATE_COLLECTION}")
     print("=" * 50)
 

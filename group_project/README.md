@@ -151,10 +151,10 @@ run_dashboard()
 
 ### Deliverable Evaluation
 
-- [ ] File `group_project/evaluation/golden_dataset.json` — 15+ cặp Q&A
-- [ ] File `group_project/evaluation/eval_pipeline.py` — script chạy evaluation
-- [ ] File `group_project/evaluation/results.md` — bảng điểm + phân tích
-- [ ] So sánh A/B ít nhất 2 configs
+- [x] File `group_project/evaluation/golden_dataset.json` — 15+ cặp Q&A
+- [x] File `group_project/evaluation/eval_pipeline.py` — script chạy evaluation
+- [x] File `group_project/evaluation/results.md` — bảng điểm + phân tích
+- [x] So sánh A/B ít nhất 2 configs
 
 ---
 
@@ -170,8 +170,76 @@ run_dashboard()
 
 ## Kiến Trúc Hệ Thống
 
+Hệ thống được thiết kế theo mô hình **Hybrid RAG** (kết hợp Dense Retrieval và Sparse Retrieval), tích hợp **Reranking**, cấu trúc trích dẫn tài liệu tham chiếu (Citation), và cơ chế Fallback sử dụng Vectorless Search.
+
+### 1. Sơ đồ kiến trúc luồng dữ liệu (Data Pipeline)
 ```
-[Vẽ diagram kiến trúc ở đây]
+                                 [Tài liệu nguồn]
+                               (Văn bản Luật & Báo)
+                                        │
+                                        ▼ (Crawl4AI / API)
+                               [Dữ liệu thô (Raw)]
+                                        │
+                                        ▼ (MarkItDown)
+                            [Dữ liệu chuẩn hóa Markdown]
+                                        │
+                                        ▼ (LangChain Text Splitters)
+                              [Các đoạn text (Chunks)]
+                                        │
+                 ┌──────────────────────┴──────────────────────┐
+                 ▼ (Gemini Embedding)                          ▼ (BM25 Indexing)
+      [Dense Vectors (Qdrant)]                      [Sparse Index (In-memory)]
+```
+
+### 2. Sơ đồ kiến trúc luồng truy vấn (Query Pipeline)
+```
+                                ┌──────────────┐
+                                │  User Query  │
+                                └──────┬───────┘
+                                       │
+                        ┌──────────────┴──────────────┐
+                        ▼                             ▼
+             [Dense Retrieval]               [Sparse Retrieval]
+          (Qdrant Semantic Search)            (BM25 Lexical)
+                        │                             │
+                        └──────────────┬──────────────┘
+                                       ▼
+                            [Reciprocal Rank Fusion]
+                                  (RRF Merge)
+                                       │
+                                       ▼
+                            [Cross-Encoder Rerank]
+                              (Jina AI Reranker)
+                                       │
+                   ┌───────────────────┴───────────────────┐
+                   │ Điểm cao nhất >= 0.3                  │ Điểm cao nhất < 0.3
+                   ▼                                       ▼
+         [Top-K Reranked Chunks]               [PageIndex Vectorless Search]
+                   │                                 (Fallback Search)
+                   │                                       │
+                   └───────────────────┬───────────────────┘
+                                       ▼
+                            [Anti-Lost-in-the-Middle]
+                             (Sắp xếp lại các chunks)
+                                       │
+                                       ▼
+                               [Context Injection] ◄── [Conversation History]
+                                       │
+                                       ▼
+                              [LLM Model Generator]
+                                (OpenAI / Gemini)
+                                       │
+                                       ▼
+                             [Streamlit UI Chatbot]
+                       (Citation, Sources, Similarity)
+```
+
+### 3. Sơ đồ đánh giá RAG (Evaluation Pipeline)
+```
+[Golden Dataset (15+ Q&A)] ──► [eval_pipeline.py] ◄──► [RAG Pipeline]
+                                     │
+                                     ▼ (LLM Evaluator: oc/mimo-v2.5-free)
+                               [results.md]
 ```
 
 ---
@@ -180,24 +248,65 @@ run_dashboard()
 
 | Thành viên | MSSV | Nhiệm vụ | Trạng thái |
 |-----------|------|----------|------------|
-| | | | |
-| | | | |
-| | | | |
-| | | | |
+| Cao Đặng Quốc Vương | 2A202600738 | Tích hợp RAG Pipeline, Xây dựng `chatbot.py` Streamlit UI | Hoàn thành |
+| Nguyễn Tùng Lâm | 2A202600555 | Xây dựng bộ dataset đánh giá `golden_dataset.json` (15+ Q&A) | Hoàn thành |
+| Đỗ Phan Hà | 2A202600543 | Thiết kế & Cấu hình Qdrant Vector DB, triển khai BM25 Lexical Search | Hoàn thành |
+| Giáp Minh Hiếu | 2A202600667 | Thu thập văn bản pháp lý (Task 1) và Crawl tin tức liên quan (Task 2) | Hoàn thành |
+| Nguyễn Thành Vinh | 2A202600971 | Tiền xử lý dữ liệu và chuyển đổi định dạng tài liệu sang Markdown (Task 3) | Hoàn thành |
+| Đỗ Đức Anh | 2A202600976 | Triển khai Reranking, PageIndex Vectorless Search và Script đánh giá (Task 7, 8 & Eval) | Hoàn thành |
 
 ---
 
 ## Hướng Dẫn Chạy
 
-```bash
-# Cài đặt dependencies
-pip install -r requirements.txt
+### 1. Chuẩn bị môi trường & API Key
+Tạo file `.env` tại thư mục gốc của dự án dựa trên file `.env.example`:
+```env
+# Vector Database & Embeddings (Gemini)
+GOOGLE_API_KEY=AIza-your-gemini-key
+QDRANT_URL=https://your-qdrant-cluster.cloud.qdrant.io:6333
+QDRANT_API_KEY=your-qdrant-api-key
 
-# Chạy app
-streamlit run app.py
-# hoặc
-chainlit run app.py
+# LLM Generation (OpenAI hoặc Gemini)
+OPENAI_API_KEY=sk-your-openai-key
+LLM_MODEL=gpt-4o-mini
+
+# Reranker & Fallback (Không bắt buộc)
+JINA_API_KEY=jina_your_reranker_key
+PAGEINDEX_API_KEY=pi_your_pageindex_key
 ```
+
+Cài đặt toàn bộ dependencies:
+```bash
+pip install -r requirements.txt
+```
+
+### 2. Thu thập và Index dữ liệu (Nếu cần chạy lại)
+```bash
+# 1. Thu thập văn bản luật phòng chống ma tuý
+python src/task1_collect_legal_docs.py
+
+# 2. Crawl tin tức liên quan từ VnExpress
+python src/task2_crawl_news.py
+
+# 3. Chuẩn hoá dữ liệu thô sang định dạng Markdown (.md)
+python src/task3_convert_markdown.py
+
+# 4. Thực hiện chunking và indexing dữ liệu vào Qdrant Cloud
+python src/task4_chunking_indexing.py
+```
+
+### 3. Chạy giao diện Chatbot UI (Streamlit)
+```bash
+streamlit run group_project/chatbot.py
+```
+*Giao diện cho phép tuỳ chọn Top-k, bật tắt Reranking, hiển thị độ tương đồng (similarity score), trích dẫn nguồn văn bản pháp lý / bài viết báo chí và hỗ trợ Memory cuộc hội thoại.*
+
+### 4. Chạy chương trình đánh giá RAG (Evaluation Pipeline)
+```bash
+python group_project/evaluation/eval_pipeline.py
+```
+*Script sẽ chạy đánh giá A/B testing tự động so sánh hai cấu hình (Hybrid + Reranking vs Dense-only) và cập nhật báo cáo trực tiếp vào file `group_project/evaluation/results.md`.*
 
 ---
 
